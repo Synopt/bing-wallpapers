@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -33,14 +34,28 @@ namespace BingWallpapers
             try
             {
                 var input = "0";
-                while (IsValidInput(input))
+
+                while (true)
                 {
-                    var offset = int.Parse(input);
-                    Console.WriteLine(PrettyPrintOffset(offset));
 
-                    MainAsync(offset).Wait(cts.Token);
+                    var offsets = ReadInput(input).Where(IsValidInput).Take(2).ToList();
 
-                    Console.WriteLine("Enter a number of days (0-14) to offset the selection by, or anything else to quit.\n");
+                    switch (offsets.Count)
+                    {
+                        case 0:
+                            return;
+                        case 1:
+                            offsets.Add(offsets.First() + 1);
+                            break;
+                    }
+
+                    Console.WriteLine(PrettyPrintOffsets(offsets));
+
+                    MainAsync(offsets).Wait(cts.Token);
+
+
+
+                    Console.WriteLine("Enter a number of days to offset the selection, a pair of numbers formatted as \"0 4\" for any two offsets, or anything else to quit.\n");
                     input = Console.ReadLine();
                     Console.Write("\n\n");
                 }
@@ -48,41 +63,61 @@ namespace BingWallpapers
             catch (AggregateException e)
             {
                 Console.WriteLine(e.InnerException);
+                Console.WriteLine("Press any key to close...");
                 Console.ReadKey();
             }
         }
 
-        private static bool IsValidInput(string input)
+        private static bool IsValidInput(int input) => input >= 0;
+
+        private static IEnumerable<int> ReadInput(string input)
         {
-            int result;
-            if (int.TryParse(input, out result))
+            return input.Split(' ').Select(TryParse);
+
+            int TryParse(string s)
             {
-                return result >= 0 && result <= 14;
+                if (int.TryParse(s, out var result))
+                {
+                    return result >= 0 ? result : -1;
+                }
+
+                return -1;
             }
-            return false;
+        }
+
+        private static string PrettyPrintOffsets(IEnumerable<int> offsets)
+        {
+            var start = new StringBuilder("Wallpapers from");
+
+            foreach (var offset in offsets)
+            {
+                start.Append($" {PrettyPrintOffset(offset)} and");
+            }
+
+            return TrimEnd(start.ToString(), " and");
+        }
+
+        private static string TrimEnd(string input, string toTrim)
+        {
+            return input.Substring(0, input.Length - toTrim.Length);
         }
 
         private static string PrettyPrintOffset(int offset)
         {
-            var start = "Wallpapers";
-
-            if (offset == 0)
+            switch (offset)
             {
-                return $"{start} for today:";
-            }
-            if (offset == 1)
-            {
-                return $"{start} for yesterday:";
-            }
-            else
-            {
-                return $"{start} from {offset} days ago:";
+                case 0:
+                    return "today";
+                case 1:
+                    return "yesterday";
+                default:
+                    return $"{offset} days ago";
             }
         }
 
-        static async Task MainAsync(int offset)
+        static async Task MainAsync(IEnumerable<int> offsets)
         {
-            var metadata = await GetWallpaperMetadata(2, offset).ConfigureAwait(false);
+            var metadata = await GetWallpaperMetadata(offsets).ConfigureAwait(false);
 
             var downloadTasks = metadata.Select(DownloadWallpaper);
 
@@ -97,21 +132,24 @@ namespace BingWallpapers
             CreateBackgroundImage(images);
         }
 
-        static async Task<IEnumerable<ImageMetadata>> GetWallpaperMetadata(int number, int offset)
+        static async Task<IEnumerable<ImageMetadata>> GetWallpaperMetadata(IEnumerable<int> offsets)
         {
             var metadata = new List<ImageMetadata>();
 
             using (var client = new WebClient())
             {
-                var url = new Uri($"http://www.bing.com/HPImageArchive.aspx?format=js&idx={offset}&n={number}&cc=gb&video=0");
-                var json = await client.DownloadStringTaskAsync(url).ConfigureAwait(false);
-                var content = JsonConvert.DeserializeObject<dynamic>(json);
-
-                foreach (var image in content.images)
+                foreach (var offset in offsets)
                 {
-                    var name = FormatName((string)image.url);
-                    var description = FormatDescription((string)image.copyright);
-                    metadata.Add(new ImageMetadata((string)image.url, name, description));
+                    var url = new Uri($"http://www.bing.com/HPImageArchive.aspx?format=js&idx={offset}&n=1&cc=gb&video=0");
+                    var json = await client.DownloadStringTaskAsync(url).ConfigureAwait(false);
+                    var content = JsonConvert.DeserializeObject<dynamic>(json);
+
+                    foreach (var image in content.images)
+                    {
+                        var name = FormatName((string)image.url);
+                        var description = FormatDescription((string)image.copyright);
+                        metadata.Add(new ImageMetadata((string)image.url, name, description));
+                    }
                 }
             }
 
